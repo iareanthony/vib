@@ -18,5 +18,5 @@ COPY scanner.py .
 
 # Pre-warm Trivy DB
 RUN trivy image --download-db-only --quiet || true
-
-CMD ["python", "scanner.py"]
+ENTRYPOINT ["python", "/app/scanner.py"]
+CMD []
