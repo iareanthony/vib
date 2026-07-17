@@ -121,8 +121,9 @@ metadata:
   name: vib-scanner
   namespace: security
 spec:
+  timeZone: America/New_York
   schedule: "0 */6 * * *"
-  suspend: true
+  suspend: false
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 3
