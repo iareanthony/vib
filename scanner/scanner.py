@@ -53,6 +53,19 @@ except ValueError:
     sys.exit(1)
 IGNORE_UNFIXED = os.environ.get("IGNORE_UNFIXED", "false").lower() == "true"
 
+DISCOVERY_PROVIDER = os.environ.get("DISCOVERY_PROVIDER", "docker").strip().lower()
+if DISCOVERY_PROVIDER not in {"docker", "kubernetes"}:
+    logger.error(
+        "FATAL: DISCOVERY_PROVIDER must be 'docker' or 'kubernetes', got %r",
+        DISCOVERY_PROVIDER,
+    )
+    sys.exit(1)
+
+KUBERNETES_CLUSTER_NAME = os.environ.get(
+    "KUBERNETES_CLUSTER_NAME",
+    "kubernetes",
+).strip() or "kubernetes"
+
 AIB_BASE_URL = os.environ.get("AIB_BASE_URL", "").rstrip("/")
 AIB_API_TOKEN = os.environ.get("AIB_API_TOKEN", "")
 
@@ -354,8 +367,8 @@ def push_scan_summary(images_scanned: int, total_vulns: int, scan_ts: float) -> 
 
 # ── Docker image discovery ────────────────────────────────────────────────────
 
-def discover_images(docker_url: str = "") -> list[str]:
-    """Return unique image names from all running containers on the given host."""
+def discover_docker_images(docker_url: str = "") -> list[str]:
+    """Return unique image names from running containers on a Docker host."""
     try:
         client = _docker_client(docker_url)
         images = set()
@@ -367,11 +380,65 @@ def discover_images(docker_url: str = "") -> list[str]:
                     images.add(container.image.id)
             except Exception:
                 continue
-        logger.info("Discovered %d running images", len(images))
+        logger.info("Discovered %d running Docker images", len(images))
         return sorted(images)
     except Exception as e:
         logger.warning("Docker discovery failed: %s", e)
         return []
+
+
+def discover_kubernetes_images() -> list[str]:
+    """Return unique images from running Kubernetes pods cluster-wide."""
+    try:
+        from kubernetes import client, config
+        from kubernetes.config.config_exception import ConfigException
+
+        try:
+            config.load_incluster_config()
+            logger.info("Using in-cluster Kubernetes configuration")
+        except ConfigException:
+            config.load_kube_config()
+            logger.info("Using local kubeconfig for Kubernetes discovery")
+
+        core_api = client.CoreV1Api()
+        pods = core_api.list_pod_for_all_namespaces(
+            field_selector="status.phase=Running",
+        )
+
+        images = set()
+
+        for pod in pods.items:
+            pod_spec = pod.spec
+            if not pod_spec:
+                continue
+
+            containers = list(pod_spec.containers or [])
+            containers.extend(pod_spec.init_containers or [])
+            containers.extend(pod_spec.ephemeral_containers or [])
+
+            for container in containers:
+                image = getattr(container, "image", None)
+                if image:
+                    images.add(image)
+
+        logger.info(
+            "Discovered %d unique images from %d running Kubernetes pods",
+            len(images),
+            len(pods.items),
+        )
+        return sorted(images)
+
+    except Exception as e:
+        logger.warning("Kubernetes discovery failed: %s", e)
+        return []
+
+
+def discover_images(docker_url: str = "") -> list[str]:
+    """Discover images using the configured provider."""
+    if DISCOVERY_PROVIDER == "kubernetes":
+        return discover_kubernetes_images()
+
+    return discover_docker_images(docker_url)
 
 
 # ── AIB integration ───────────────────────────────────────────────────────────
@@ -421,7 +488,12 @@ def report_to_aib(image: str, vulns: list[dict]) -> None:
 def run_scan() -> None:
     logger.info("─── Starting vulnerability scan ───")
     scan_ts = time.time()
-    hosts = _parse_docker_hosts()
+    if DISCOVERY_PROVIDER == "kubernetes":
+        hosts = [(KUBERNETES_CLUSTER_NAME, "")]
+    else:
+        hosts = _parse_docker_hosts()
+
+    logger.info("Discovery provider: %s", DISCOVERY_PROVIDER)
 
     total_vulns = 0
     images_scanned = 0
@@ -435,7 +507,17 @@ def run_scan() -> None:
         images = list(dict.fromkeys(images))
 
         if not images:
-            logger.warning("No images on %s. Check socket/DOCKER_HOSTS or set ADDITIONAL_IMAGES.", host_name)
+            if DISCOVERY_PROVIDER == "kubernetes":
+                logger.warning(
+                    "No Kubernetes images discovered for cluster %s. "
+                    "Check Kubernetes API access and RBAC.",
+                    host_name,
+                )
+            else:
+                logger.warning(
+                    "No images on %s. Check socket/DOCKER_HOSTS or set ADDITIONAL_IMAGES.",
+                    host_name,
+                )
             continue
 
         for image in images:
