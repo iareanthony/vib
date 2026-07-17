@@ -214,7 +214,7 @@ def _safe_label(value: str) -> str:
 def push_metrics(image: str, vulns: list[dict], scan_ts: float, host: str = "local") -> None:
     """Push scan results to VictoriaMetrics in Prometheus line format."""
     lines = []
-    ts_ms = int(scan_ts * 1000)
+    ts_ms = int(time.time() * 1000)
 
     # De-duplicate by (cve_id, pkg_name, target) so VictoriaMetrics doesn't silently drop dupes
     seen = set()
@@ -299,7 +299,7 @@ def push_metrics(image: str, vulns: list[dict], scan_ts: float, host: str = "loc
 
 def push_scan_error(image: str, host: str, scan_ts: float) -> None:
     """Push a vib_scan_errors_total counter when a Trivy scan/parse fails."""
-    ts_ms = int(scan_ts * 1000)
+    ts_ms = int(time.time() * 1000)
     safe_image = _safe_label(image)
     safe_host = _safe_label(host)
     payload = f'vib_scan_errors_total{{image="{safe_image}",host="{safe_host}"}} 1 {ts_ms}'
@@ -323,7 +323,7 @@ def push_scan_error(image: str, host: str, scan_ts: float) -> None:
 
 def push_scan_summary(images_scanned: int, total_vulns: int, scan_ts: float) -> None:
     """Push overall scan summary metrics (aggregated across all hosts)."""
-    ts_ms = int(scan_ts * 1000)
+    ts_ms = int(time.time() * 1000)
     payload = "\n".join([
         f"vib_images_scanned_total {images_scanned} {ts_ms}",
         f"vib_total_vulnerabilities {total_vulns} {ts_ms}",

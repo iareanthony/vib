@@ -70,6 +70,7 @@ spec:
             - --storageDataPath=/storage
             - --retentionPeriod=90d
             - --httpListenAddr=:8428
+            - --search.maxStalenessInterval=7h
           ports:
             - name: http
               containerPort: 8428
