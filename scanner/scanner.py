@@ -297,6 +297,57 @@ def push_metrics(image: str, vulns: list[dict], scan_ts: float, host: str = "loc
             return
 
 
+def push_kubernetes_workload_metrics(
+    workloads: list[dict],
+    cluster: str,
+) -> None:
+    """Push Kubernetes workload-to-image mapping metrics."""
+    if not workloads:
+        logger.warning("No Kubernetes workload mappings to push")
+        return
+
+    ts_ms = int(time.time() * 1000)
+    safe_cluster = _safe_label(cluster)
+    lines = []
+
+    for item in workloads:
+        namespace = _safe_label(item["namespace"])
+        workload_kind = _safe_label(item["workload_kind"])
+        workload = _safe_label(item["workload"])
+        container_type = _safe_label(item["container_type"])
+        container = _safe_label(item["container"])
+        image = _safe_label(item["image"])
+
+        lines.append(
+            "vib_kubernetes_workload_image{"
+            f'cluster="{safe_cluster}",'
+            f'namespace="{namespace}",'
+            f'workload_kind="{workload_kind}",'
+            f'workload="{workload}",'
+            f'container_type="{container_type}",'
+            f'container="{container}",'
+            f'image="{image}"'
+            f"}} 1 {ts_ms}"
+        )
+
+    payload = "\n".join(lines)
+
+    try:
+        response = requests.post(
+            f"{VICTORIAMETRICS_URL}/api/v1/import/prometheus",
+            data=payload,
+            headers={"Content-Type": "text/plain"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        logger.info(
+            "Pushed %d Kubernetes workload mappings",
+            len(lines),
+        )
+    except Exception as e:
+        logger.error("Failed to push Kubernetes workload mappings: %s", e)
+
+
 def push_scan_error(image: str, host: str, scan_ts: float) -> None:
     """Push a vib_scan_errors_total counter when a Trivy scan/parse fails."""
     ts_ms = int(time.time() * 1000)
@@ -387,50 +438,163 @@ def discover_docker_images(docker_url: str = "") -> list[str]:
         return []
 
 
-def discover_kubernetes_images() -> list[str]:
-    """Return unique images from running Kubernetes pods cluster-wide."""
-    try:
-        from kubernetes import client, config
-        from kubernetes.config.config_exception import ConfigException
+def _load_kubernetes_config():
+    """Load in-cluster configuration, falling back to the local kubeconfig."""
+    from kubernetes import config
+    from kubernetes.config.config_exception import ConfigException
 
-        try:
-            config.load_incluster_config()
-            logger.info("Using in-cluster Kubernetes configuration")
-        except ConfigException:
-            config.load_kube_config()
-            logger.info("Using local kubeconfig for Kubernetes discovery")
+    try:
+        config.load_incluster_config()
+        logger.info("Using in-cluster Kubernetes configuration")
+    except ConfigException:
+        config.load_kube_config()
+        logger.info("Using local kubeconfig for Kubernetes discovery")
+
+
+def _owner_reference(obj):
+    """Return the controlling owner reference, or the first owner."""
+    references = getattr(getattr(obj, "metadata", None), "owner_references", None) or []
+
+    for reference in references:
+        if getattr(reference, "controller", False):
+            return reference
+
+    return references[0] if references else None
+
+
+def _resolve_workload(pod, replica_sets: dict, jobs: dict) -> tuple[str, str]:
+    """Resolve a pod to its highest useful Kubernetes workload owner."""
+    owner = _owner_reference(pod)
+
+    if owner is None:
+        return "Pod", pod.metadata.name
+
+    kind = owner.kind
+    name = owner.name
+    namespace = pod.metadata.namespace
+
+    if kind == "ReplicaSet":
+        replica_set = replica_sets.get((namespace, name))
+        replica_set_owner = _owner_reference(replica_set) if replica_set else None
+
+        if replica_set_owner:
+            return replica_set_owner.kind, replica_set_owner.name
+
+        return "ReplicaSet", name
+
+    if kind == "Job":
+        job = jobs.get((namespace, name))
+        job_owner = _owner_reference(job) if job else None
+
+        if job_owner and job_owner.kind == "CronJob":
+            return "CronJob", job_owner.name
+
+        return "Job", name
+
+    return kind, name
+
+
+def discover_kubernetes_inventory() -> tuple[list[str], list[dict]]:
+    """Return unique images and workload mappings from running Kubernetes pods."""
+    try:
+        from kubernetes import client
+
+        _load_kubernetes_config()
 
         core_api = client.CoreV1Api()
+        apps_api = client.AppsV1Api()
+        batch_api = client.BatchV1Api()
+
         pods = core_api.list_pod_for_all_namespaces(
             field_selector="status.phase=Running",
         )
 
+        replica_sets = {
+            (item.metadata.namespace, item.metadata.name): item
+            for item in apps_api.list_replica_set_for_all_namespaces().items
+        }
+
+        jobs = {
+            (item.metadata.namespace, item.metadata.name): item
+            for item in batch_api.list_job_for_all_namespaces().items
+        }
+
         images = set()
+        mappings = set()
 
         for pod in pods.items:
             pod_spec = pod.spec
             if not pod_spec:
                 continue
 
-            containers = list(pod_spec.containers or [])
-            containers.extend(pod_spec.init_containers or [])
-            containers.extend(pod_spec.ephemeral_containers or [])
+            namespace = pod.metadata.namespace or "default"
+            workload_kind, workload = _resolve_workload(
+                pod,
+                replica_sets,
+                jobs,
+            )
 
-            for container in containers:
-                image = getattr(container, "image", None)
-                if image:
+            container_groups = [
+                ("container", pod_spec.containers or []),
+                ("init", pod_spec.init_containers or []),
+                ("ephemeral", pod_spec.ephemeral_containers or []),
+            ]
+
+            for container_type, containers in container_groups:
+                for container in containers:
+                    image = getattr(container, "image", None)
+                    name = getattr(container, "name", None)
+
+                    if not image or not name:
+                        continue
+
                     images.add(image)
+                    mappings.add((
+                        namespace,
+                        workload_kind,
+                        workload,
+                        container_type,
+                        name,
+                        image,
+                    ))
+
+        workload_records = [
+            {
+                "namespace": namespace,
+                "workload_kind": workload_kind,
+                "workload": workload,
+                "container_type": container_type,
+                "container": container,
+                "image": image,
+            }
+            for (
+                namespace,
+                workload_kind,
+                workload,
+                container_type,
+                container,
+                image,
+            ) in sorted(mappings)
+        ]
 
         logger.info(
-            "Discovered %d unique images from %d running Kubernetes pods",
+            "Discovered %d unique images and %d workload mappings from %d running Kubernetes pods",
             len(images),
+            len(workload_records),
             len(pods.items),
         )
-        return sorted(images)
+
+        return sorted(images), workload_records
 
     except Exception as e:
         logger.warning("Kubernetes discovery failed: %s", e)
-        return []
+        return [], []
+
+
+def discover_kubernetes_images() -> list[str]:
+    """Compatibility helper returning only Kubernetes image names."""
+    images, _ = discover_kubernetes_inventory()
+    return images
 
 
 def discover_images(docker_url: str = "") -> list[str]:
@@ -503,7 +667,18 @@ def run_scan() -> None:
             logger.info("Shutdown requested, aborting scan loop.")
             break
         logger.info("── Host: %s (%s) ──", host_name, docker_url or "local socket")
-        images = discover_images(docker_url)
+
+        workload_mappings = []
+
+        if DISCOVERY_PROVIDER == "kubernetes":
+            images, workload_mappings = discover_kubernetes_inventory()
+            push_kubernetes_workload_metrics(
+                workload_mappings,
+                cluster=KUBERNETES_CLUSTER_NAME,
+            )
+        else:
+            images = discover_images(docker_url)
+
         images = list(dict.fromkeys(images))
 
         if not images:
