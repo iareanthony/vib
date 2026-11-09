@@ -48,6 +48,8 @@ jobs:
           file: ./scanner/Dockerfile
           push: true
           platforms: linux/amd64
+          pull: true
+          no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

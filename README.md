@@ -96,6 +96,9 @@ make clean       # stop and delete all volumes (destroys data)
 
 VIB can feed critical and high-severity findings into [AIB (Asset Inventory in a Box)](https://github.com/matijazezelj/aib), enriching your asset graph with live vulnerability data. See [docs/integrations.md](docs/integrations.md).
 
+The Kubernetes scanner image is rebuilt without cache from Alpine 3.23, upgrades
+base packages, and includes Trivy 0.76.2 with current Python client libraries.
+
 ---
 
 ## In-a-box ecosystem
