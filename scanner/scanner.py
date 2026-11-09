@@ -723,11 +723,12 @@ def run_scan() -> None:
 
     # Scan ADDITIONAL_IMAGES once, outside the per-host loop, under "additional" host label
     if ADDITIONAL_IMAGES and not _shutdown.is_set():
-        # Pick a docker_url for ADDITIONAL_IMAGES: prefer local socket, fall back to first remote
-        local_available = os.path.exists("/var/run/docker.sock")
+        # Registry references do not need a Docker socket when Kubernetes is the
+        # discovery provider. Docker discovery still prefers its configured daemon.
         additional_docker_url = ""
         skip_additional = False
-        if not local_available:
+        local_available = os.path.exists("/var/run/docker.sock")
+        if DISCOVERY_PROVIDER != "kubernetes" and not local_available:
             remote_hosts = [(n, u) for (n, u) in hosts if u]
             if remote_hosts:
                 fallback_name, fallback_url = remote_hosts[0]

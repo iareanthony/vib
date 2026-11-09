@@ -98,6 +98,9 @@ VIB can feed critical and high-severity findings into [AIB (Asset Inventory in a
 
 The Kubernetes scanner image is rebuilt without cache from Alpine 3.23, upgrades
 base packages, and includes Trivy 0.76.2 with current Python client libraries.
+The AMFTech CronJob also scans maintained CIB, TIB, and non-running XIB adapter
+images through `ADDITIONAL_IMAGES`; running maintained workloads are discovered
+directly from Kubernetes pods.
 
 ---
 

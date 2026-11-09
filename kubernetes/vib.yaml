@@ -173,6 +173,14 @@ spec:
                   value: "false"
                 - name: TRIVY_TIMEOUT
                   value: "600"
+                - name: ADDITIONAL_IMAGES
+                  value: >-
+                    ghcr.io/iareanthony/cib-checker:feature-kubernetes-compliance,
+                    ghcr.io/iareanthony/tib-collector:feature-kubernetes-deployment,
+                    ghcr.io/iareanthony/xib-vib-scanner:0.2.0,
+                    ghcr.io/iareanthony/xib-cib-checker:0.2.0,
+                    ghcr.io/iareanthony/xib-tib-collector:0.2.0,
+                    ghcr.io/iareanthony/xib-iib-monitor:0.2.0
               resources:
                 requests:
                   cpu: 250m
