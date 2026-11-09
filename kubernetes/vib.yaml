@@ -156,7 +156,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: scanner
-              image: ghcr.io/iareanthony/vib-scanner:feature-kubernetes-discovery@sha256:e5af5cb833b620f8120ba3f368e1d57d34d19c772eadb88960991c03eb93c0dd
+              image: ghcr.io/iareanthony/vib-scanner:feature-kubernetes-discovery@sha256:04e448da8e9caf05c897d6a4cb0df3a7237371ea07ba6d801a5b217e3ce74517
               imagePullPolicy: Always
               args:
                 - --once
